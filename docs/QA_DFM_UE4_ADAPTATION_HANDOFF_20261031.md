@@ -24,10 +24,14 @@
 1. 通过 GitHub 连接确认新 Fork 存在且拥有 push 权限。
 2. 创建分支 qa-dfm-ue4-adaptation。
 3. 增加 GitHub Actions 的 ARM64 NDK 编译流程，使用可复现的 NDK 版本和子模块拉取。
-4. 通过 push 触发 Actions #41191463375。
+4. Actions #41191463375 首次因过期的 SDK `tools` 依赖而失败；修复 workflow，移除相关 setup action。
+5. Actions #41191543294 完整通过，包括 NDK 安装、C++ 编译及 artifact 上传。
+6. 产物：UEDump3r_arm64，ELF64 ARM64 PIE；文件 SHA256 `112ac9653e801215801a444bf90a844c085896309351a81b30e350b6fcccd499`。
+7. GitHub artifact: https://github.com/64646608/Android_UE_Dumper_CN/actions/runs/41191543294/artifacts/13039305587
+8. 真机 Dump 验收尚未完成。
 
 ## 尚未完成
-- 尚未确认 CI 产物构建是否成功。
+- CI 编译已通过，尚未完成目标版本真机兼容性验证。
 - 未修改真实 GNames / GUObjectArray / GWorld RVA。
 - 没有完成任何真正 SDK Dump。
 - 没有开发人物、Bot、武器、摄像机的实时客户端绘制功能。
