@@ -126,6 +126,9 @@ int main(int argc, char **args)
     int requestedPID = 0;
     cmdline.addScanf("-P", "--pid", "select a specific PID without an interactive prompt.", false, "%d", &requestedPID);
 
+    bool bQaDfmDump = false;
+    cmdline.addFlag("-Q", "--qa-dfm-dump", "opt-in real SDK dump using prevalidated DeltaForce runtime offsets.", false, &bQaDfmDump);
+
     bool bQaDfmDiagnostic = false;
     cmdline.addFlag("-q", "--qa-dfm-diagnose", "read-only DeltaForce runtime signature diagnostics (no SDK dump).", false, &bQaDfmDiagnostic);
 
@@ -143,6 +146,17 @@ int main(int argc, char **args)
     }
 
     std::string sOutDirectory = sOutDir, sGamePackage = sGamePkg;
+    if (bQaDfmDump && bQaDfmDiagnostic)
+    {
+        LOGE("Choose exactly one: --qa-dfm-dump OR --qa-dfm-diagnose.");
+        return 2;
+    }
+    if (bQaDfmDump && sGamePackage != "com.tencent.tmgp.dfm")
+    {
+        LOGE("--qa-dfm-dump requires -p com.tencent.tmgp.dfm.");
+        return 2;
+    }
+
     if (sOutDirectory.empty() && !bQaDfmDiagnostic)
     {
         LOGE("Output directory path is not specified.");
@@ -225,7 +239,7 @@ int main(int argc, char **args)
         }
         gamePID = requestedPID;
     }
-    else if (bQaDfmDiagnostic && gamePIDs.size() > 1)
+    else if ((bQaDfmDiagnostic || bQaDfmDump) && gamePIDs.size() > 1)
     {
         std::vector<pid_t> mapped;
         std::vector<pid_t> exact;
@@ -390,6 +404,12 @@ int main(int argc, char **args)
         {
             if (sGamePackage != pkg)
                 continue;
+
+            if (bQaDfmDump)
+            {
+                LOGI("QA_DFM REAL_DUMP enabled. Runtime offsets must pass NamePool and GUObject validation before dump.");
+                static_cast<DeltaForceProfile *>(it)->EnableQARuntimeDump(true);
+            }
 
             if (bDumpLib)
             {
