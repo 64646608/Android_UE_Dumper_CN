@@ -13,6 +13,99 @@ class DeltaForceProfile : public IGameProfile
 public:
     DeltaForceProfile() = default;
 
+    // Explicit opt-in: observed RVAs for current QA runtime only.
+    void EnableQARuntimeDump(bool enabled) { qaRuntimeDumpEnabled = enabled; }
+private:
+    bool qaRuntimeDumpEnabled = false;
+    static constexpr uintptr_t kQANamePoolRVA = 0x20291EC0;
+    static constexpr uintptr_t kQAGUObjectArrayRVA = 0x202B8CF8;
+
+    uintptr_t GetCheckedQANames() const
+    {
+        const auto elf = GetUnrealELF();
+        if (!elf.isValid()) return 0;
+        const uintptr_t pool = elf.base() + kQANamePoolRVA;
+        const UE_Offsets *off = GetOffsets();
+        if (!kPtrValidator.isPtrReadable((void *)pool)) return 0;
+        const uintptr_t block0 = vm_rpm_ptr<uintptr_t>(
+            (void *)(pool + off->FNamePool.BlocksOff));
+        if (!block0 || !kPtrValidator.isPtrReadable((void *)block0)) return 0;
+        uint16_t header = 0;
+        if (!vm_rpm_ptr((void *)(block0 + off->FNamePoolEntry.Header),
+                        &header, sizeof(header))) return 0;
+        if (off->FNamePoolEntry.GetLength(header) != 4 ||
+            GetNameEntryString((uint8_t *)block0) != "None")
+        {
+            std::printf("QA_DFM DUMP_PRECHECK FAIL NamePool decode\n");
+            return 0;
+        }
+        std::printf("QA_DFM DUMP_PRECHECK PASS NamePool rva=0x%llx first=None\n",
+                    (unsigned long long)kQANamePoolRVA);
+        return pool;
+    }
+
+    uintptr_t GetCheckedQAObjects() const
+    {
+        const auto elf = GetUnrealELF();
+        if (!elf.isValid()) return 0;
+        const UE_Offsets *o = GetOffsets();
+        const uintptr_t candidate = elf.base() + kQAGUObjectArrayRVA;
+        const uintptr_t arrayBase = candidate + o->FUObjectArray.ObjObjects;
+        if (!kPtrValidator.isPtrReadable((void *)arrayBase)) return 0;
+        const int32_t num = vm_rpm_ptr<int32_t>(
+            (void *)(arrayBase + o->TUObjectArray.NumElements));
+        const uintptr_t chunks = vm_rpm_ptr<uintptr_t>(
+            (void *)(arrayBase + o->TUObjectArray.Objects));
+        if (num < 1024 || num > 3000000 || !chunks ||
+            !kPtrValidator.isPtrReadable((void *)chunks))
+        {
+            std::printf("QA_DFM DUMP_PRECHECK FAIL objects count=%d chunks=0x%llx\n",
+                        num, (unsigned long long)chunks);
+            return 0;
+        }
+        const uintptr_t chunk0 = vm_rpm_ptr<uintptr_t>((void *)chunks);
+        if (!chunk0 || !kPtrValidator.isPtrReadable((void *)chunk0)) return 0;
+        unsigned valid = 0, readableNames = 0;
+        for (int k = 0; k < 24; ++k)
+        {
+            const uintptr_t obj = vm_rpm_ptr<uintptr_t>(
+                (void *)(chunk0 + uintptr_t(k) * o->FUObjectItem.Size +
+                         o->FUObjectItem.Object));
+            if (!obj || !kPtrValidator.isPtrReadable((void *)obj)) continue;
+            const uintptr_t klass = vm_rpm_ptr<uintptr_t>(
+                (void *)(obj + o->UObject.ClassPrivate));
+            const int32_t index = vm_rpm_ptr<int32_t>(
+                (void *)(obj + o->UObject.InternalIndex));
+            if (!klass || !kPtrValidator.isPtrReadable((void *)klass)
+                || index != k) continue;
+            ++valid;
+            const int32_t nameIndex = vm_rpm_ptr<int32_t>(
+                (void *)(obj + o->UObject.NamePrivate));
+            if (nameIndex < 0 || nameIndex > 100000000) continue;
+            const std::string name = GetNameByID(nameIndex);
+            if (name.empty() || name.size() > 120) continue;
+            bool printable = true;
+            for (unsigned char ch : name)
+                if (ch < 32 || ch > 126) { printable = false; break; }
+            if (printable) ++readableNames;
+            if (printable && k < 5)
+                std::printf("QA_DFM DUMP_OBJECT index=%d id=%d name='%s'\n",
+                            k, nameIndex, name.c_str());
+        }
+        std::printf("QA_DFM DUMP_PRECHECK objects_rva=0x%llx count=%d class_indices=%u/24 names=%u/24\n",
+                    (unsigned long long)kQAGUObjectArrayRVA,
+                    num, valid, readableNames);
+        if (valid < 20 || readableNames < 5)
+        {
+            std::printf("QA_DFM DUMP_PRECHECK FAIL object names or structure\n");
+            return 0;
+        }
+        std::printf("QA_DFM DUMP_PRECHECK PASS GUObjectArray\n");
+        return candidate;
+    }
+public:
+
+
 
     // Runtime-only QA: uses this profile's signature engine and UE4 object
     // layout; no fixed version RVAs, memory writes or SDK generation.
@@ -230,6 +323,7 @@ public:
 
     uintptr_t GetGUObjectArrayPtr() const override
     {
+        if (qaRuntimeDumpEnabled) return GetCheckedQAObjects();
         std::vector<std::pair<std::string, int>> idaPatterns = {
             {"91 E1 03 ? AA E0 03 08 AA E2 03 1F 2A", -7},
             {"B4 21 0C 40 B9 ? ? ? ? ? ? ? 91", 5},
@@ -305,6 +399,7 @@ public:
     }
     uintptr_t GetNamesPtr() const override
     {
+        if (qaRuntimeDumpEnabled) return GetCheckedQANames();
         PATTERN_MAP_TYPE map_type = isEmulator() ? PATTERN_MAP_TYPE::ANY_R : PATTERN_MAP_TYPE::ANY_X;
 
         std::string ida_pattern = "91 ? 10 81 52 ? ? 21 8b";
