@@ -223,17 +223,6 @@ int main(int argc, char **args)
         return 1;
     }
 
-    std::string sDumpDir = sOutDirectory + "/UEDump3r";
-    std::string sDumpGameDir = sDumpDir + "/" + sGamePackage;
-    IOUtils::delete_directory(sDumpGameDir);
-
-    if (IOUtils::mkdir_recursive(sDumpGameDir, 0777) == -1)
-    {
-        int err = errno;
-        LOGE("Couldn't create Output Directory [\"%s\"] error=%d | %s.", sDumpDir.c_str(), err, strerror(err));
-        return 1;
-    }
-
     if (bQaDfmDiagnostic)
     {
         if (sGamePackage != "com.tencent.tmgp.dfm")
@@ -247,6 +236,17 @@ int main(int argc, char **args)
         DeltaForceProfile profile;
         const bool matched = profile.PrintQAPatternDiagnostics();
         return matched ? 0 : 2;
+    }
+
+    std::string sDumpDir = sOutDirectory + "/UEDump3r";
+    std::string sDumpGameDir = sDumpDir + "/" + sGamePackage;
+    IOUtils::delete_directory(sDumpGameDir);
+
+    if (IOUtils::mkdir_recursive(sDumpGameDir, 0777) == -1)
+    {
+        int err = errno;
+        LOGE("Couldn't create Output Directory [\"%s\"] error=%d | %s.", sDumpDir.c_str(), err, strerror(err));
+        return 1;
     }
 
     UEDumper uEDumper{};
