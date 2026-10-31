@@ -113,7 +113,7 @@ int main(int argc, char **args)
     { std::cout << cmdline.toString() << std::endl; bNeededHelp = true; });
 
     char sOutDir[0xff] = {0};
-    cmdline.addScanf("-o", "--output", "specify output directory path.", true, "%s", sOutDir);
+    cmdline.addScanf("-o", "--output", "specify output directory path.", false, "%s", sOutDir);
 
     // optional
     char sGamePkg[0xff] = {0};
@@ -122,6 +122,9 @@ int main(int argc, char **args)
     // options
     bool bDumpLib = false;
     cmdline.addFlag("-d", "--dumplib", "dump UE library from memory.", false, &bDumpLib);
+
+    bool bQaDfmDiagnostic = false;
+    cmdline.addFlag("-q", "--qa-dfm-diagnose", "read-only DeltaForce runtime signature diagnostics (no SDK dump).", false, &bQaDfmDiagnostic);
 
     cmdline.parseArgs();
 
@@ -137,7 +140,7 @@ int main(int argc, char **args)
     }
 
     std::string sOutDirectory = sOutDir, sGamePackage = sGamePkg;
-    if (sOutDirectory.empty())
+    if (sOutDirectory.empty() && !bQaDfmDiagnostic)
     {
         LOGE("Output directory path is not specified.");
         return 1;
@@ -213,6 +216,13 @@ int main(int argc, char **args)
     LOGI("Dump Library: %s", bDumpLib ? "true" : "false");
     LOGI("==========================");
 
+    LOGI("Initializing Memory...");
+    if (!kMgr.initialize(gamePID, EK_MEM_OP_SYSCALL, false) && !kMgr.initialize(gamePID, EK_MEM_OP_IO, false))
+    {
+        LOGE("Failed to initialize KittyMemoryMgr.");
+        return 1;
+    }
+
     std::string sDumpDir = sOutDirectory + "/UEDump3r";
     std::string sDumpGameDir = sDumpDir + "/" + sGamePackage;
     IOUtils::delete_directory(sDumpGameDir);
@@ -224,11 +234,19 @@ int main(int argc, char **args)
         return 1;
     }
 
-    LOGI("Initializing Memory...");
-    if (!kMgr.initialize(gamePID, EK_MEM_OP_SYSCALL, false) && !kMgr.initialize(gamePID, EK_MEM_OP_IO, false))
+    if (bQaDfmDiagnostic)
     {
-        LOGE("Failed to initialize KittyMemoryMgr.");
-        return 1;
+        if (sGamePackage != "com.tencent.tmgp.dfm")
+        {
+            LOGE("QA signature diagnostic is only available for the DeltaForce profile.");
+            return 2;
+        }
+        kPtrValidator.setPID(gamePID);
+        kPtrValidator.setUseCache(true);
+        kPtrValidator.refreshRegionCache();
+        DeltaForceProfile profile;
+        const bool matched = profile.PrintQAPatternDiagnostics();
+        return matched ? 0 : 2;
     }
 
     UEDumper uEDumper{};
