@@ -123,6 +123,9 @@ int main(int argc, char **args)
     bool bDumpLib = false;
     cmdline.addFlag("-d", "--dumplib", "dump UE library from memory.", false, &bDumpLib);
 
+    int requestedPID = 0;
+    cmdline.addScanf("-P", "--pid", "select a specific PID without an interactive prompt.", false, "%d", &requestedPID);
+
     bool bQaDfmDiagnostic = false;
     cmdline.addFlag("-q", "--qa-dfm-diagnose", "read-only DeltaForce runtime signature diagnostics (no SDK dump).", false, &bQaDfmDiagnostic);
 
@@ -180,6 +183,7 @@ int main(int argc, char **args)
         sGamePackage = UE_Games[gameIndexMap[gameNumber].first]->GetAppIDs()[gameIndexMap[gameNumber].second];
     }
 
+
     auto gamePIDs = KittyMemoryEx::getPIDsOf(sGamePackage);
     if (gamePIDs.empty())
     {
@@ -187,20 +191,75 @@ int main(int argc, char **args)
         return 1;
     }
 
+    // Prefer a process that actually has the UE runtime mapped. A shell or
+    // su process containing the package name in its command line can also be
+    // returned by process-name substring discovery; blindly asking for
+    // "process number" is inappropriate for non-interactive QA diagnostics.
+    auto hasUE4Map = [](pid_t pid) -> bool
+    {
+        return !KittyMemoryEx::getMapsContain(pid, "libUE4.so").empty() ||
+               !KittyMemoryEx::getMapsContain(pid, "libUnreal.so").empty();
+    };
+    auto hasExactCmdline = [&sGamePackage](pid_t pid) -> bool
+    {
+        char path[64] = {0};
+        std::snprintf(path, sizeof(path), "/proc/%d/cmdline", int(pid));
+        FILE *fp = std::fopen(path, "rb");
+        if (!fp) return false;
+        char name[512] = {0};
+        const size_t length = std::fread(name, 1, sizeof(name) - 1, fp);
+        std::fclose(fp);
+        return length && sGamePackage == std::string(name);
+    };
+
     pid_t gamePID = 0;
-    if (gamePIDs.size() > 1)
+    if (requestedPID > 0)
+    {
+        bool found = false;
+        for (pid_t p : gamePIDs)
+            if (p == requestedPID) found = true;
+        if (!found || !hasUE4Map(requestedPID))
+        {
+            LOGE("Requested --pid %d is not a recognized game process with a loaded UE library.", requestedPID);
+            return 2;
+        }
+        gamePID = requestedPID;
+    }
+    else if (bQaDfmDiagnostic && gamePIDs.size() > 1)
+    {
+        std::vector<pid_t> mapped;
+        std::vector<pid_t> exact;
+        for (pid_t pid : gamePIDs)
+        {
+            if (!hasUE4Map(pid)) continue;
+            mapped.push_back(pid);
+            if (hasExactCmdline(pid)) exact.push_back(pid);
+        }
+        if (exact.size() == 1)
+            gamePID = exact.front();
+        else if (mapped.size() == 1)
+            gamePID = mapped.front();
+        else
+        {
+            LOGE("QA diagnostics found %zu possible game processes with UE mappings; cannot choose safely.", mapped.size());
+            for (pid_t pid : mapped)
+                LOGI("Mapped UE process: PID %d (exact_cmdline=%d)", int(pid), hasExactCmdline(pid) ? 1 : 0);
+            LOGE("Specify --pid <PID> to select one without interaction.");
+            return 2;
+        }
+        LOGI("QA automatically selected PID %d (UE library mapped; no interactive prompt).", int(gamePID));
+    }
+    else if (gamePIDs.size() > 1)
     {
         std::cout << "Found multiple processes with same package name, Choose one: " << std::endl;
         for (size_t i = 0; i < gamePIDs.size(); i++)
-        {
             std::cout << "\t" << i << ": PID(" << gamePIDs[i] << ")" << std::endl;
-        }
-        std::cout << "Process number: ";
-        int gamePidIndex = 0;
-        scanf("%d", &gamePidIndex);
-        if (gamePidIndex < 0 || gamePidIndex >= gamePIDs.size())
+        std::cout << "Process number: " << std::flush;
+        int gamePidIndex = -1;
+        if (scanf("%d", &gamePidIndex) != 1 ||
+            gamePidIndex < 0 || size_t(gamePidIndex) >= gamePIDs.size())
         {
-            LOGE("Selected PID index is out of range.");
+            LOGE("No valid process index selected.");
             return 1;
         }
         gamePID = gamePIDs[gamePidIndex];
