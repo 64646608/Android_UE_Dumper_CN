@@ -8,6 +8,69 @@ class DeltaForceProfile : public IGameProfile
 public:
     DeltaForceProfile() = default;
 
+    // Read-only dynamic signature diagnostic for this concrete game's runtime
+    // image. It deliberately does not use previously reported fixed RVAs and
+    // does not attempt an SDK dump or write memory.
+    bool PrintQAPatternDiagnostics() const
+    {
+        auto elf = GetUnrealELF();
+        if (!elf.isValid())
+        {
+            std::printf("QA_DFM ERROR: libUE4.so mapping not found\n");
+            return false;
+        }
+
+        const uintptr_t base = elf.base();
+        const PATTERN_MAP_TYPE map_type =
+            isEmulator() ? PATTERN_MAP_TYPE::ANY_R : PATTERN_MAP_TYPE::ANY_X;
+        std::printf("QA_DFM base=0x%llx scan_mode=%s profile=DeltaForce\n",
+                    (unsigned long long)base,
+                    isEmulator() ? "readable" : "executable");
+        std::printf("QA_DFM NOTE: signature candidates are NOT validated UE4 globals\n");
+
+        struct Signature
+        {
+            const char *label;
+            const char *pattern;
+            int step;
+        };
+        const Signature objectSignatures[] = {
+            {"GUObjects_1", "91 E1 03 ? AA E0 03 08 AA E2 03 1F 2A", -7},
+            {"GUObjects_2", "B4 21 0C 40 B9 ? ? ? ? ? ? ? 91", 5},
+            {"GUObjects_3", "9F E5 00 ? 00 E3 FF ? 40 E3 ? ? A0 E1", -2},
+            {"GUObjects_4", "96 df 02 17 ? ? ? ? 54 ? ? ? ? ? ? ? 91 e1 03 13 aa", 9},
+            {"GUObjects_5", "f4 03 01 2a ? 00 00 34 ? ? ? ? ? ? ? ? ? ? 00 54 ? 00 00 14 ? ? ? ? ? ? ? 91", 0x18},
+            {"GUObjects_6", "69 3e 40 b9 1f 01 09 6b ? ? ? 54 e1 03 13 aa ? ? ? ? f4 4f ? a9 ? ? ? ? ? ? ? 91", 0x18},
+        };
+        unsigned objectHits = 0;
+        for (const auto &sig : objectSignatures)
+        {
+            const uintptr_t instruction = findIdaPattern(map_type, sig.pattern, sig.step);
+            const uintptr_t global = Arm64::Decode_ADRP_ADD(instruction);
+            const bool readable = global && kPtrValidator.isPtrReadable(reinterpret_cast<const void *>(global));
+            std::printf("QA_DFM %-13s hit_rva=0x%llx candidate_rva=0x%llx readable=%d\n",
+                        sig.label,
+                        (unsigned long long)(instruction ? instruction - base : 0),
+                        (unsigned long long)(global && global >= base ? global - base : 0),
+                        readable ? 1 : 0);
+            if (readable)
+                ++objectHits;
+        }
+
+        const uintptr_t nameInsn = findIdaPattern(
+            map_type, "91 ? 10 81 52 ? ? 21 8b", -7);
+        const uintptr_t nameGlobal = Arm64::Decode_ADRP_ADD(nameInsn);
+        const bool nameReadable =
+            nameGlobal && kPtrValidator.isPtrReadable(reinterpret_cast<const void *>(nameGlobal));
+        std::printf("QA_DFM NamePool      hit_rva=0x%llx candidate_rva=0x%llx readable=%d\n",
+                    (unsigned long long)(nameInsn ? nameInsn - base : 0),
+                    (unsigned long long)(nameGlobal && nameGlobal >= base ? nameGlobal - base : 0),
+                    nameReadable ? 1 : 0);
+        std::printf("QA_DFM SUMMARY readable_object_candidates=%u namepool_candidate=%d\n",
+                    objectHits, nameReadable ? 1 : 0);
+        return objectHits > 0 && nameReadable;
+    }
+
     bool ArchSupprted() const override
     {
         auto e_machine = GetUnrealELF().header().e_machine;
