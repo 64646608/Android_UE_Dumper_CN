@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cstdio>
+
 #include "../UEGameProfile.hpp"
 using namespace UEMemory;
 
