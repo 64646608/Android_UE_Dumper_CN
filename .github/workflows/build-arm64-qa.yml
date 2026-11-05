@@ -1,0 +1,77 @@
+name: Build UE4 Dumper ARM64 (QA)
+
+on:
+  push:
+    branches:
+      - qa-dfm-ue4-adaptation
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  build-arm64:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout source and KittyMemoryEx submodule
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Android NDK r26d using preinstalled SDK
+        shell: bash
+        run: |
+          set -euxo pipefail
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" -type f -name sdkmanager | head -n 1)"
+          test -n "$SDKMANAGER"
+          "$SDKMANAGER" --sdk_root="$ANDROID_HOME" --install 'ndk;26.3.11579264'
+
+      - name: Build ARM64 executable
+        shell: bash
+        run: |
+          set -euxo pipefail
+          export NDK_HOME="$ANDROID_HOME/ndk/26.3.11579264"
+          test -f deps/KittyMemoryEx/KittyMemoryEx/KittyMemoryMgr.cpp
+          cd AndUEDumper
+          "$NDK_HOME/ndk-build" NDK_PROJECT_PATH=. NDK_APPLICATION_MK=./Application.mk APP_ABI=arm64-v8a APP_PLATFORM=android-24 -j2
+          test -s libs/arm64-v8a/UEDump3r_arm64
+          file libs/arm64-v8a/UEDump3r_arm64
+          sha256sum libs/arm64-v8a/UEDump3r_arm64
+
+      - name: Publish ARM64 directly to a rolling GitHub prerelease
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euxo pipefail
+          TAG="dfm-qa-latest"
+          ASSET="AndUEDumper/libs/arm64-v8a/UEDump3r_arm64"
+          test -s "$ASSET"
+          (
+            cd "$(dirname "$ASSET")"
+            sha256sum UEDump3r_arm64 > UEDump3r_arm64.sha256
+          )
+          CHECKSUM="${ASSET}.sha256"
+          printf 'QA build (NOT validated on the target Android device).\n\nSource commit: %s\nWorkflow run: %s\n\nThe UE4 offsets are not yet verified.\n' "$GITHUB_SHA" "$GITHUB_RUN_ID" > release_notes.txt
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$ASSET" "$CHECKSUM" --clobber --repo "$GITHUB_REPOSITORY"
+            gh release edit "$TAG" --notes-file release_notes.txt --title "DFM ARM64 QA (rolling, unverified)" --prerelease --repo "$GITHUB_REPOSITORY"
+          else
+            gh release create "$TAG" "$ASSET" "$CHECKSUM" --target "$GITHUB_SHA" --title "DFM ARM64 QA (rolling, unverified)" --notes-file release_notes.txt --prerelease --repo "$GITHUB_REPOSITORY"
+          fi
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json url,assets
+
+      - name: Remove old QA Actions artifacts (release verified)
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          IDS="$(gh api "repos/$GITHUB_REPOSITORY/actions/artifacts?name=UE4-Dumper-ARM64-QA&per_page=100" --jq '.artifacts[].id')"
+          for artifact_id in $IDS; do
+            echo "Removing old QA artifact $artifact_id"
+            gh api -X DELETE "repos/$GITHUB_REPOSITORY/actions/artifacts/$artifact_id"
+          done

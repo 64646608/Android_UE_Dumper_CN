@@ -1,5 +1,10 @@
 #pragma once
 
+#include <cstdio>
+#include <algorithm>
+#include <cstring>
+#include <vector>
+
 #include "../UEGameProfile.hpp"
 using namespace UEMemory;
 
@@ -7,6 +12,288 @@ class DeltaForceProfile : public IGameProfile
 {
 public:
     DeltaForceProfile() = default;
+
+    // Explicit opt-in: observed RVAs for current QA runtime only.
+    void EnableQARuntimeDump(bool enabled, uintptr_t namePoolRVA = 0x20291EC0, uintptr_t objectsRVA = 0x202B8CF8)
+    {
+        qaRuntimeDumpEnabled = enabled;
+        qaNamePoolRVA = namePoolRVA;
+        qaObjectsRVA = objectsRVA;
+    }
+private:
+    bool qaRuntimeDumpEnabled = false;
+    uintptr_t qaNamePoolRVA = 0x20291EC0;
+    uintptr_t qaObjectsRVA = 0x202B8CF8;
+
+    uintptr_t GetCheckedQANames() const
+    {
+        const auto elf = GetUnrealELF();
+        if (!elf.isValid()) return 0;
+        const uintptr_t pool = elf.base() + qaNamePoolRVA;
+        const UE_Offsets *off = GetOffsets();
+        if (!kPtrValidator.isPtrReadable((void *)pool)) return 0;
+        const uintptr_t block0 = vm_rpm_ptr<uintptr_t>(
+            (void *)(pool + off->FNamePool.BlocksOff));
+        if (!block0 || !kPtrValidator.isPtrReadable((void *)block0)) return 0;
+        uint16_t header = 0;
+        if (!vm_rpm_ptr((void *)(block0 + off->FNamePoolEntry.Header),
+                        &header, sizeof(header))) return 0;
+        if (off->FNamePoolEntry.GetLength(header) != 4 ||
+            GetNameEntryString((uint8_t *)block0) != "None")
+        {
+            std::printf("QA_DFM DUMP_PRECHECK FAIL NamePool decode\n");
+            return 0;
+        }
+        std::printf("QA_DFM DUMP_PRECHECK PASS NamePool rva=0x%llx first=None\n",
+                    (unsigned long long)qaNamePoolRVA);
+        return pool;
+    }
+
+    uintptr_t GetCheckedQAObjects() const
+    {
+        const auto elf = GetUnrealELF();
+        if (!elf.isValid()) return 0;
+        const UE_Offsets *o = GetOffsets();
+        const uintptr_t candidate = elf.base() + qaObjectsRVA;
+        const uintptr_t arrayBase = candidate + o->FUObjectArray.ObjObjects;
+        if (!kPtrValidator.isPtrReadable((void *)arrayBase)) return 0;
+        const int32_t num = vm_rpm_ptr<int32_t>(
+            (void *)(arrayBase + o->TUObjectArray.NumElements));
+        const uintptr_t chunks = vm_rpm_ptr<uintptr_t>(
+            (void *)(arrayBase + o->TUObjectArray.Objects));
+        if (num < 1024 || num > 3000000 || !chunks ||
+            !kPtrValidator.isPtrReadable((void *)chunks))
+        {
+            std::printf("QA_DFM DUMP_PRECHECK FAIL objects count=%d chunks=0x%llx\n",
+                        num, (unsigned long long)chunks);
+            return 0;
+        }
+        const uintptr_t chunk0 = vm_rpm_ptr<uintptr_t>((void *)chunks);
+        if (!chunk0 || !kPtrValidator.isPtrReadable((void *)chunk0)) return 0;
+        unsigned valid = 0, readableNames = 0;
+        for (int k = 0; k < 24; ++k)
+        {
+            const uintptr_t obj = vm_rpm_ptr<uintptr_t>(
+                (void *)(chunk0 + uintptr_t(k) * o->FUObjectItem.Size +
+                         o->FUObjectItem.Object));
+            if (!obj || !kPtrValidator.isPtrReadable((void *)obj)) continue;
+            const uintptr_t klass = vm_rpm_ptr<uintptr_t>(
+                (void *)(obj + o->UObject.ClassPrivate));
+            const int32_t index = vm_rpm_ptr<int32_t>(
+                (void *)(obj + o->UObject.InternalIndex));
+            if (!klass || !kPtrValidator.isPtrReadable((void *)klass)
+                || index != k) continue;
+            ++valid;
+            const int32_t nameIndex = vm_rpm_ptr<int32_t>(
+                (void *)(obj + o->UObject.NamePrivate));
+            if (nameIndex < 0 || nameIndex > 100000000) continue;
+            const std::string name = GetNameByID(nameIndex);
+            if (name.empty() || name.size() > 120) continue;
+            bool printable = true;
+            for (unsigned char ch : name)
+                if (ch < 32 || ch > 126) { printable = false; break; }
+            if (printable) ++readableNames;
+            if (printable && k < 5)
+                std::printf("QA_DFM DUMP_OBJECT index=%d id=%d name='%s'\n",
+                            k, nameIndex, name.c_str());
+        }
+        std::printf("QA_DFM DUMP_PRECHECK objects_rva=0x%llx count=%d class_indices=%u/24 names=%u/24\n",
+                    (unsigned long long)qaObjectsRVA,
+                    num, valid, readableNames);
+        if (valid < 20 || readableNames < 5)
+        {
+            std::printf("QA_DFM DUMP_PRECHECK FAIL object names or structure\n");
+            return 0;
+        }
+        std::printf("QA_DFM DUMP_PRECHECK PASS GUObjectArray\n");
+        return candidate;
+    }
+public:
+
+
+
+    // Runtime-only QA: uses this profile's signature engine and UE4 object
+    // layout; no fixed version RVAs, memory writes or SDK generation.
+    bool PrintQAPatternDiagnostics() const
+    {
+        const auto elf = GetUnrealELF();
+        if (!elf.isValid())
+        {
+            std::printf("QA_DFM ERROR no UE ELF mapping\n");
+            return false;
+        }
+        const uintptr_t base = elf.base();
+        const auto mode = isEmulator() ? PATTERN_MAP_TYPE::ANY_R : PATTERN_MAP_TYPE::ANY_X;
+        std::printf("QA_DFM base=0x%llx mode=%s\n",
+                    (unsigned long long)base, isEmulator() ? "readable" : "executable");
+
+        struct Sig { const char *name; const char *bytes; int step; };
+        const Sig objectSigs[] = {
+            {"GUObjects_1", "91 E1 03 ? AA E0 03 08 AA E2 03 1F 2A", -7},
+            {"GUObjects_2", "B4 21 0C 40 B9 ? ? ? ? ? ? ? 91", 5},
+            {"GUObjects_3", "9F E5 00 ? 00 E3 FF ? 40 E3 ? ? A0 E1", -2},
+            {"GUObjects_4", "96 df 02 17 ? ? ? ? 54 ? ? ? ? ? ? ? 91 e1 03 13 aa", 9},
+            {"GUObjects_5", "f4 03 01 2a ? 00 00 34 ? ? ? ? ? ? ? ? ? ? 00 54 ? 00 00 14 ? ? ? ? ? ? ? 91", 0x18},
+            {"GUObjects_6", "69 3e 40 b9 1f 01 09 6b ? ? ? 54 e1 03 13 aa ? ? ? ? f4 4f ? a9 ? ? ? ? ? ? ? 91", 0x18},
+        };
+        unsigned matchedSigs = 0;
+        for (const auto &sig : objectSigs)
+        {
+            const uintptr_t ip = findIdaPattern(mode, sig.bytes, sig.step);
+            const uintptr_t ptr = Arm64::Decode_ADRP_ADD(ip);
+            const bool valid = ptr && kPtrValidator.isPtrReadable((const void *)ptr);
+            std::printf("QA_DFM %-12s hit_rva=0x%llx candidate_rva=0x%llx readable=%d\n",
+                        sig.name,
+                        (unsigned long long)(ip && ip >= base ? ip - base : 0),
+                        (unsigned long long)(ptr && ptr >= base ? ptr - base : 0),
+                        valid ? 1 : 0);
+            matchedSigs += valid ? 1 : 0;
+        }
+
+        const uintptr_t nameInsn = findIdaPattern(mode, "91 ? 10 81 52 ? ? 21 8b", -7);
+        const uintptr_t pool = Arm64::Decode_ADRP_ADD(nameInsn);
+        const bool poolReadable = pool && kPtrValidator.isPtrReadable((const void *)pool);
+        std::printf("QA_DFM NamePool hit_rva=0x%llx candidate_rva=0x%llx readable=%d\n",
+                    (unsigned long long)(nameInsn && nameInsn >= base ? nameInsn - base : 0),
+                    (unsigned long long)(pool && pool >= base ? pool - base : 0),
+                    poolReadable ? 1 : 0);
+        bool decodedName = false;
+        if (poolReadable)
+        {
+            // A readable global is insufficient. Follow real DeltaForce FNamePool
+            // layout and run its own GetNameEntryString() decoder.
+            const UE_Offsets *off = GetOffsets();
+            const uintptr_t block0 =
+                vm_rpm_ptr<uintptr_t>((void *)(pool + off->FNamePool.BlocksOff));
+            uint32_t currentBlock = 0, cursor = 0;
+            vm_rpm_ptr((void *)(pool + sizeof(void *)), &currentBlock, sizeof(currentBlock));
+            vm_rpm_ptr((void *)(pool + sizeof(void *) + sizeof(uint32_t)), &cursor, sizeof(cursor));
+            if (block0 && kPtrValidator.isPtrReadable((const void *)block0))
+            {
+                uint16_t header = 0;
+                vm_rpm_ptr((const void *)(block0 + off->FNamePoolEntry.Header),
+                           &header, sizeof(header));
+                const size_t length = off->FNamePoolEntry.GetLength(header);
+                std::string firstName;
+                if (length > 0 && length <= 96)
+                    firstName = GetNameEntryString((uint8_t *)block0);
+                for (char &c : firstName)
+                    if ((unsigned char)c < 32 || (unsigned char)c > 126)
+                        c = '?';
+                decodedName = !firstName.empty() && firstName != "None" ?
+                              firstName.size() >= 2 : firstName == "None";
+                std::printf("QA_DFM POOL_CHECK block0=0x%llx current_block=%u cursor=0x%x header=0x%x length=%zu name0='%s' decode_plausible=%d\n",
+                            (unsigned long long)block0, currentBlock, cursor,
+                            header, length, firstName.c_str(), decodedName ? 1 : 0);
+            }
+            else
+            {
+                std::printf("QA_DFM POOL_CHECK invalid first block pointer=0x%llx\n",
+                            (unsigned long long)block0);
+            }
+        }
+
+        // The six upstream signatures may be version-specific. Use the native
+        // DeltaForce TUObjectArray offsets to cross-check .bss/data ONLY.
+        // No blind process-wide sweep. Candidates are evidence, not an
+        // automatic patch to the production object-array address.
+        const UE_Offsets *o = GetOffsets();
+        const size_t nOff = o->FUObjectArray.ObjObjects + o->TUObjectArray.NumElements;
+        const size_t pOff = o->FUObjectArray.ObjObjects + o->TUObjectArray.Objects;
+        const size_t itemSize = o->FUObjectItem.Size;
+        const size_t indexOff = o->UObject.InternalIndex;
+        const size_t classOff = o->UObject.ClassPrivate;
+        std::printf("QA_DFM LAYOUT num_off=0x%zx objects_off=0x%zx item_stride=0x%zx class_off=0x%zx index_off=0x%zx\n",
+                    nOff, pOff, itemSize, classOff, indexOff);
+        std::vector<KittyMemoryEx::ProcMap> regions = elf.bssSegments();
+        std::vector<KittyMemoryEx::ProcMap> writable;
+        for (const auto &seg : elf.segments())
+            if (seg.readable && seg.writeable && seg.is_private)
+                writable.push_back(seg);
+        // Scan high-address writable data before large low-address RELRO.
+        std::sort(writable.begin(), writable.end(),
+                  [](const KittyMemoryEx::ProcMap &a,
+                     const KittyMemoryEx::ProcMap &b) { return a.startAddress > b.startAddress; });
+        for (const auto &seg : writable)
+        {
+            bool overlaps = false;
+            for (const auto &bss : regions)
+                if (seg.startAddress < bss.endAddress && bss.startAddress < seg.endAddress)
+                    overlaps = true;
+            if (!overlaps) regions.push_back(seg);
+        }
+        size_t bytesRead = 0;
+        unsigned considered = 0, validCandidates = 0;
+        const size_t budget = 32 * 1024 * 1024;
+        std::vector<uint8_t> buf(64 * 1024 + 64);
+        for (const auto &region : regions)
+        {
+            if (!region.readable || region.endAddress <= region.startAddress || bytesRead >= budget)
+                continue;
+            std::printf("QA_DFM REGION start_rva=0x%llx bytes=%llu\n",
+                        (unsigned long long)(region.startAddress >= base ? region.startAddress - base : 0),
+                        (unsigned long long)(region.endAddress - region.startAddress));
+            for (uintptr_t addr = region.startAddress;
+                 addr < region.endAddress && bytesRead < budget;)
+            {
+                const size_t available = (size_t)(region.endAddress - addr);
+                const size_t count = std::min<size_t>(buf.size(), std::min<size_t>(available, budget - bytesRead));
+                if (count < pOff + sizeof(uintptr_t)) break;
+                if (kMgr.readMem(addr, buf.data(), count) == count)
+                {
+                    // A GUObjectArray is pointer-aligned. Check count, its chunk
+                    // table, real object class and InternalIndex relationships.
+                    for (size_t at = 0; at + pOff + 8 <= count; at += 8)
+                    {
+                        int32_t num = 0;
+                        uintptr_t chunks = 0;
+                        std::memcpy(&num, buf.data() + at + nOff, sizeof(num));
+                        if (num < 1024 || num > 3000000) continue;
+                        std::memcpy(&chunks, buf.data() + at + pOff, sizeof(chunks));
+                        if (!chunks || chunks % sizeof(void *) != 0 ||
+                            !kPtrValidator.isPtrReadable((const void *)chunks))
+                            continue;
+                        ++considered;
+                        const uintptr_t chunk0 = vm_rpm_ptr<uintptr_t>((void *)chunks);
+                        if (!chunk0 || !kPtrValidator.isPtrReadable((const void *)chunk0))
+                            continue;
+                        unsigned score = 0;
+                        for (int32_t k = 0; k < 24; ++k)
+                        {
+                            const uintptr_t obj = vm_rpm_ptr<uintptr_t>(
+                                (void *)(chunk0 + (uintptr_t)k * itemSize + o->FUObjectItem.Object));
+                            if (!obj || !kPtrValidator.isPtrReadable((const void *)obj))
+                                continue;
+                            const uintptr_t klass = vm_rpm_ptr<uintptr_t>((void *)(obj + classOff));
+                            const int32_t objectIndex = vm_rpm_ptr<int32_t>((void *)(obj + indexOff));
+                            if (klass && kPtrValidator.isPtrReadable((const void *)klass)
+                                && objectIndex == k)
+                                ++score;
+                        }
+                        if (score >= 3)
+                        {
+                            ++validCandidates;
+                            const uintptr_t guessed = addr + at;
+                            std::printf("QA_DFM OBJECT_LAYOUT_CANDIDATE rva=0x%llx count=%d validated_indices=%u/24 chunks=0x%llx\n",
+                                        (unsigned long long)(guessed >= base ? guessed - base : 0),
+                                        num, score, (unsigned long long)chunks);
+                            if (validCandidates >= 12) break;
+                        }
+                    }
+                }
+                bytesRead += count;
+                if (validCandidates >= 12) break;
+                const size_t step = count > 64 ? count - 64 : count;
+                addr += step;
+            }
+            if (validCandidates >= 12) break;
+        }
+        std::printf("QA_DFM SUMMARY sig_guobjects=%u namepool_readable=%d name0_plausible=%d structural_objects=%u considered=%u scanned_bytes=%zu\n",
+                    matchedSigs, poolReadable ? 1 : 0, decodedName ? 1 : 0,
+                    validCandidates, considered, bytesRead);
+        std::printf("QA_DFM STATUS no automatic offset changes; candidates require independent validation\n");
+        return decodedName && (matchedSigs > 0 || validCandidates > 0);
+    }
 
     bool ArchSupprted() const override
     {
@@ -41,6 +328,7 @@ public:
 
     uintptr_t GetGUObjectArrayPtr() const override
     {
+        if (qaRuntimeDumpEnabled) return GetCheckedQAObjects();
         std::vector<std::pair<std::string, int>> idaPatterns = {
             {"91 E1 03 ? AA E0 03 08 AA E2 03 1F 2A", -7},
             {"B4 21 0C 40 B9 ? ? ? ? ? ? ? 91", 5},
@@ -116,6 +404,7 @@ public:
     }
     uintptr_t GetNamesPtr() const override
     {
+        if (qaRuntimeDumpEnabled) return GetCheckedQANames();
         PATTERN_MAP_TYPE map_type = isEmulator() ? PATTERN_MAP_TYPE::ANY_R : PATTERN_MAP_TYPE::ANY_X;
 
         std::string ida_pattern = "91 ? 10 81 52 ? ? 21 8b";

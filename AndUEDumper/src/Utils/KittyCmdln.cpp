@@ -57,11 +57,11 @@ void KittyCmdln::addFlag(const std::string &name, const std::string &alias, cons
 
 void KittyCmdln::addScanf(const std::string &name, const std::string &alias, const std::string &desc, bool required, const std::string &fmt, void *buffer)
 {
-    addCmd(name, alias, desc, required, [this, name, fmt, buffer]()
+    addCmd(name, alias, desc, required, [this, name, alias, fmt, buffer]()
     {
         for (int i = 1; i < _argc; i++)
         {
-            if (!strcmp(name.c_str(), _args[i]))
+            if (!strcmp(name.c_str(), _args[i]) || !strcmp(alias.c_str(), _args[i]))
             {
                 if ((i + 1) < _argc && !contains(_args[i + 1]))
                 {
