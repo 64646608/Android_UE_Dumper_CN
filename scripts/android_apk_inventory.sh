@@ -2,10 +2,10 @@
 # Stage 1 of APK SDK migration: inventory only (no game memory access).
 # Usage: su -c 'sh /data/local/tmp/android_apk_inventory.sh [package_name]'
 set -u
-PKG="\${1:-com.tencent.tmgp.dfm}"
+PKG="${1:-com.tencent.tmgp.dfm}"
 case "$PKG" in ''|*[!A-Za-z0-9._]*) echo "Invalid package: $PKG"; exit 2;; esac
 STAMP="$(date +%Y%m%d_%H%M%S)"
-OUT="/data/local/tmp/dfm_inventory_\${STAMP}.txt"
+OUT="/data/local/tmp/dfm_inventory_${STAMP}.txt"
 umask 077
 {
   echo "DFM SDK version inventory / no live memory reading"
@@ -38,8 +38,8 @@ umask 077
 } > "$OUT" 2>&1
 RC=$?
 cat "$OUT"
-if cp "$OUT" "/sdcard/Download/dfm_inventory_\${STAMP}.txt" 2>/dev/null; then
-  chmod 0644 "/sdcard/Download/dfm_inventory_\${STAMP}.txt" 2>/dev/null || true
-  echo "Saved /sdcard/Download/dfm_inventory_\${STAMP}.txt"
+if cp "$OUT" "/sdcard/Download/dfm_inventory_${STAMP}.txt" 2>/dev/null; then
+  chmod 0644 "/sdcard/Download/dfm_inventory_${STAMP}.txt" 2>/dev/null || true
+  echo "Saved /sdcard/Download/dfm_inventory_${STAMP}.txt"
 fi
 exit "$RC"
