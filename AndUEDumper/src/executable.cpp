@@ -1,5 +1,6 @@
 
 #include <cerrno>
+#include <cstdlib>
 #include <chrono>
 #include <cstdio>
 #include <iostream>
@@ -126,6 +127,12 @@ int main(int argc, char **args)
     int requestedPID = 0;
     cmdline.addScanf("-P", "--pid", "select a specific PID without an interactive prompt.", false, "%d", &requestedPID);
 
+    // Optional hexadecimal RVAs. Both must be provided together.
+    char namePoolArg[0x40] = {0};
+    char objectsArg[0x40] = {0};
+    cmdline.addScanf("-N", "--namepool-rva", "NamePool RVA relative to libUE4.so, e.g. 0x200F7D00.", false, "%s", namePoolArg);
+    cmdline.addScanf("-G", "--guobject-rva", "GUObjectArray RVA relative to libUE4.so, e.g. 0x2011EB48.", false, "%s", objectsArg);
+
     bool bQaDfmDump = false;
     cmdline.addFlag("-Q", "--qa-dfm-dump", "opt-in real SDK dump using prevalidated DeltaForce runtime offsets.", false, &bQaDfmDump);
 
@@ -146,6 +153,37 @@ int main(int argc, char **args)
     }
 
     std::string sOutDirectory = sOutDir, sGamePackage = sGamePkg;
+    uintptr_t namePoolRVA = 0x20291EC0;
+    uintptr_t objectsRVA = 0x202B8CF8;
+    const bool customName = namePoolArg[0] != '\0';
+    const bool customObjects = objectsArg[0] != '\0';
+    if (customName != customObjects)
+    {
+        LOGE("--namepool-rva and --guobject-rva must be supplied together.");
+        return 2;
+    }
+    if ((customName || customObjects) && !bQaDfmDump)
+    {
+        LOGE("Custom RVAs require --qa-dfm-dump.");
+        return 2;
+    }
+    auto parseRVA = [](const char *value, uintptr_t &target) -> bool
+    {
+        if (!value || !*value || *value == '-') return false;
+        char *end = nullptr;
+        errno = 0;
+        unsigned long long n = std::strtoull(value, &end, 0);
+        if (errno != 0 || end == value || *end != '\0' || n == 0 ||
+            n >= 0x100000000ULL) return false;
+        target = static_cast<uintptr_t>(n);
+        return true;
+    };
+    if (customName && (!parseRVA(namePoolArg, namePoolRVA) ||
+                       !parseRVA(objectsArg, objectsRVA)))
+    {
+        LOGE("Invalid RVA. Supply both offsets in 0x-prefixed hexadecimal.");
+        return 2;
+    }
     if (bQaDfmDump && bQaDfmDiagnostic)
     {
         LOGE("Choose exactly one: --qa-dfm-dump OR --qa-dfm-diagnose.");
@@ -408,7 +446,11 @@ int main(int argc, char **args)
             if (bQaDfmDump)
             {
                 LOGI("QA_DFM REAL_DUMP enabled. Runtime offsets must pass NamePool and GUObject validation before dump.");
-                static_cast<DeltaForceProfile *>(it)->EnableQARuntimeDump(true);
+                LOGI("QA_DFM runtime offsets: NamePool=0x%llx GUObjectArray=0x%llx (%s)",
+                     (unsigned long long)namePoolRVA,
+                     (unsigned long long)objectsRVA,
+                     customName ? "custom" : "default");
+                static_cast<DeltaForceProfile *>(it)->EnableQARuntimeDump(true, namePoolRVA, objectsRVA);
             }
 
             if (bDumpLib)
