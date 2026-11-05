@@ -9,7 +9,7 @@ from pathlib import Path
 
 OBJECT = re.compile(r'^\s*//\s*Object:\s*(.+?)\s*$')
 SIZE = re.compile(r'^\s*//\s*Size:\s*(0x[0-9a-fA-F]+)')
-MEMBER = re.compile(r'^\s*(.*?)\s+([A-Za-z_]\w*(?:\[[^\]]+\])?)\s*;\s*//\s*0x([0-9a-fA-F]+)\(0x([0-9a-fA-F]+)\)')
+MEMBER = re.compile(r'^\s*(.*?)\s+([A-Za-z_]\w*(?:\[[^\]]+\])?)(?:\s*:\s*(\d+))?\s*;\s*//\s*0x([0-9a-fA-F]+)\(0x([0-9a-fA-F]+)\)(?:,\s*Mask\((0x[0-9A-Fa-f]+)\))?')
 DECL = re.compile(r'^\s*(?:struct|class)\s+([A-Za-z_]\w*(?:::[A-Za-z_]\w*)?)\b')
 
 
@@ -36,12 +36,14 @@ def load_header(path):
             continue
         m = MEMBER.match(line)
         if m:
-            dtype, name, offset, width = m.groups()
+            dtype, name, bit_width, offset, width, bit_mask = m.groups()
             if name.startswith(('Pad_', 'BitPad_')):
                 continue
             result[active]['members'][name] = {
                 'type': re.sub(r'\s+', ' ', dtype).strip(),
                 'offset': int(offset, 16), 'size': int(width, 16),
+                'bit_width': int(bit_width) if bit_width is not None else None,
+                'bit_mask': int(bit_mask, 16) if bit_mask is not None else None,
             }
     return result
 
