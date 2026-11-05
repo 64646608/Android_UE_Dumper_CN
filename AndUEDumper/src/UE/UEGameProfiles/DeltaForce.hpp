@@ -14,17 +14,22 @@ public:
     DeltaForceProfile() = default;
 
     // Explicit opt-in: observed RVAs for current QA runtime only.
-    void EnableQARuntimeDump(bool enabled) { qaRuntimeDumpEnabled = enabled; }
+    void EnableQARuntimeDump(bool enabled, uintptr_t namePoolRVA = 0x20291EC0, uintptr_t objectsRVA = 0x202B8CF8)
+    {
+        qaRuntimeDumpEnabled = enabled;
+        qaNamePoolRVA = namePoolRVA;
+        qaObjectsRVA = objectsRVA;
+    }
 private:
     bool qaRuntimeDumpEnabled = false;
-    static constexpr uintptr_t kQANamePoolRVA = 0x20291EC0;
-    static constexpr uintptr_t kQAGUObjectArrayRVA = 0x202B8CF8;
+    uintptr_t qaNamePoolRVA = 0x20291EC0;
+    uintptr_t qaObjectsRVA = 0x202B8CF8;
 
     uintptr_t GetCheckedQANames() const
     {
         const auto elf = GetUnrealELF();
         if (!elf.isValid()) return 0;
-        const uintptr_t pool = elf.base() + kQANamePoolRVA;
+        const uintptr_t pool = elf.base() + qaNamePoolRVA;
         const UE_Offsets *off = GetOffsets();
         if (!kPtrValidator.isPtrReadable((void *)pool)) return 0;
         const uintptr_t block0 = vm_rpm_ptr<uintptr_t>(
@@ -40,7 +45,7 @@ private:
             return 0;
         }
         std::printf("QA_DFM DUMP_PRECHECK PASS NamePool rva=0x%llx first=None\n",
-                    (unsigned long long)kQANamePoolRVA);
+                    (unsigned long long)qaNamePoolRVA);
         return pool;
     }
 
@@ -49,7 +54,7 @@ private:
         const auto elf = GetUnrealELF();
         if (!elf.isValid()) return 0;
         const UE_Offsets *o = GetOffsets();
-        const uintptr_t candidate = elf.base() + kQAGUObjectArrayRVA;
+        const uintptr_t candidate = elf.base() + qaObjectsRVA;
         const uintptr_t arrayBase = candidate + o->FUObjectArray.ObjObjects;
         if (!kPtrValidator.isPtrReadable((void *)arrayBase)) return 0;
         const int32_t num = vm_rpm_ptr<int32_t>(
@@ -93,7 +98,7 @@ private:
                             k, nameIndex, name.c_str());
         }
         std::printf("QA_DFM DUMP_PRECHECK objects_rva=0x%llx count=%d class_indices=%u/24 names=%u/24\n",
-                    (unsigned long long)kQAGUObjectArrayRVA,
+                    (unsigned long long)qaObjectsRVA,
                     num, valid, readableNames);
         if (valid < 20 || readableNames < 5)
         {
