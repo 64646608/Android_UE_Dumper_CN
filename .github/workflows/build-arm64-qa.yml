@@ -1,14 +1,18 @@
-name: Build UE4 Dumper ARM64 (QA)
+name: Build PUBGM UE Dumper ARM64
 
 on:
   push:
     branches:
-      - qa-dfm-ue4-adaptation
+      - qa-pubgm-sdk-adaptation-20261127
   workflow_dispatch:
 
 permissions:
   contents: write
   actions: write
+
+concurrency:
+  group: pubgm-sdk-arm64-release
+  cancel-in-progress: false
 
 jobs:
   build-arm64:
@@ -25,7 +29,7 @@ jobs:
         run: |
           set -euxo pipefail
           echo "ANDROID_HOME=$ANDROID_HOME"
-          SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" -type f -name sdkmanager | head -n 1)"
+          SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" -type f -name sdkmanager | sort -V | tail -n 1)"
           test -n "$SDKMANAGER"
           "$SDKMANAGER" --sdk_root="$ANDROID_HOME" --install 'ndk;26.3.11579264'
 
@@ -39,15 +43,16 @@ jobs:
           "$NDK_HOME/ndk-build" NDK_PROJECT_PATH=. NDK_APPLICATION_MK=./Application.mk APP_ABI=arm64-v8a APP_PLATFORM=android-24 -j2
           test -s libs/arm64-v8a/UEDump3r_arm64
           file libs/arm64-v8a/UEDump3r_arm64
+          "$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf" -h libs/arm64-v8a/UEDump3r_arm64 | grep -q AArch64
           sha256sum libs/arm64-v8a/UEDump3r_arm64
 
-      - name: Publish ARM64 directly to a rolling GitHub prerelease
+      - name: Publish directly to rolling GitHub prerelease
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euxo pipefail
-          TAG="dfm-qa-latest"
+          TAG="pubgm-sdk-latest"
           ASSET="AndUEDumper/libs/arm64-v8a/UEDump3r_arm64"
           test -s "$ASSET"
           (
@@ -55,23 +60,45 @@ jobs:
             sha256sum UEDump3r_arm64 > UEDump3r_arm64.sha256
           )
           CHECKSUM="${ASSET}.sha256"
-          printf 'QA build (NOT validated on the target Android device).\n\nSource commit: %s\nWorkflow run: %s\n\nThe UE4 offsets are not yet verified.\n' "$GITHUB_SHA" "$GITHUB_RUN_ID" > release_notes.txt
+          cat > release_notes.txt <<EOF
+          PUBGM private-server SDK dumper QA build.
+
+          Package/profile: com.tencent.tmgp.pubgmhd
+          Fixed current-version entries:
+          - GNames RVA: 0x176E6650
+          - GUObjectArray RVA: 0x17D46E08
+          - ObjObjects RVA: 0x17D46E18
+          - UObject.NamePrivate: 0x48
+          - FNameEntry.Name: 0x0C
+
+          Usage:
+            su
+            chmod 755 /data/local/tmp/UEDump3r_arm64
+            /data/local/tmp/UEDump3r_arm64 -p com.tencent.tmgp.pubgmhd -o /sdcard/Download/PUBGM_SDK
+
+          This is a staged SDK-layout adaptation. If dumping advances beyond GNames but stops later,
+          use the new status/log output to identify the next UObject/UStruct field that changed.
+
+          Source commit: $GITHUB_SHA
+          Workflow run: $GITHUB_RUN_ID
+          No Actions artifact is uploaded or retained.
+          EOF
           if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release upload "$TAG" "$ASSET" "$CHECKSUM" --clobber --repo "$GITHUB_REPOSITORY"
-            gh release edit "$TAG" --notes-file release_notes.txt --title "DFM ARM64 QA (rolling, unverified)" --prerelease --repo "$GITHUB_REPOSITORY"
+            gh release edit "$TAG" --target "$GITHUB_SHA" --notes-file release_notes.txt --title "PUBGM SDK Dumper ARM64 (rolling QA)" --prerelease --repo "$GITHUB_REPOSITORY"
           else
-            gh release create "$TAG" "$ASSET" "$CHECKSUM" --target "$GITHUB_SHA" --title "DFM ARM64 QA (rolling, unverified)" --notes-file release_notes.txt --prerelease --repo "$GITHUB_REPOSITORY"
+            gh release create "$TAG" "$ASSET" "$CHECKSUM" --target "$GITHUB_SHA" --title "PUBGM SDK Dumper ARM64 (rolling QA)" --notes-file release_notes.txt --prerelease --repo "$GITHUB_REPOSITORY"
           fi
-          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json url,assets
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json url,tagName,targetCommitish,assets
 
-      - name: Remove old QA Actions artifacts (release verified)
+      - name: Verify no Actions artifacts are retained
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          IDS="$(gh api "repos/$GITHUB_REPOSITORY/actions/artifacts?name=UE4-Dumper-ARM64-QA&per_page=100" --jq '.artifacts[].id')"
+          IDS="$(gh api "repos/$GITHUB_REPOSITORY/actions/artifacts?per_page=100" --jq '.artifacts[] | select(.name | test("UE4-Dumper|UEDump|PUBGM"; "i")) | .id')"
           for artifact_id in $IDS; do
-            echo "Removing old QA artifact $artifact_id"
+            echo "Removing Actions artifact $artifact_id"
             gh api -X DELETE "repos/$GITHUB_REPOSITORY/actions/artifacts/$artifact_id"
           done
