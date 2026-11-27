@@ -46,13 +46,13 @@ jobs:
           "$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf" -h libs/arm64-v8a/UEDump3r_arm64 | grep -q AArch64
           sha256sum libs/arm64-v8a/UEDump3r_arm64
 
-      - name: Publish directly to rolling GitHub prerelease
+      - name: Publish directly as a new GitHub Release
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euxo pipefail
-          TAG="pubgm-sdk-latest"
+          TAG="pubgm-sdk-20261127-r${GITHUB_RUN_NUMBER}"
           ASSET="AndUEDumper/libs/arm64-v8a/UEDump3r_arm64"
           test -s "$ASSET"
           (
@@ -61,7 +61,7 @@ jobs:
           )
           CHECKSUM="${ASSET}.sha256"
           cat > release_notes.txt <<EOF
-          PUBGM private-server SDK dumper QA build.
+          PUBGM private-server SDK dumper ARM64 release.
 
           Package/profile: com.tencent.tmgp.pubgmhd
           Fixed current-version entries:
@@ -76,19 +76,23 @@ jobs:
             chmod 755 /data/local/tmp/UEDump3r_arm64
             /data/local/tmp/UEDump3r_arm64 -p com.tencent.tmgp.pubgmhd -o /sdcard/Download/PUBGM_SDK
 
-          This is a staged SDK-layout adaptation. If dumping advances beyond GNames but stops later,
-          use the new status/log output to identify the next UObject/UStruct field that changed.
+          Current adaptation:
+          - GNames fixed to verified current RVA 0x176E6650
+          - live GUObjectArray signature/RVA/dereference probing
+          - Flat/Chunked object-array layout probing
+          - 0xB4 tagged UObject pointer normalization
+          - runtime selection of object count / stride / InternalIndex / NamePrivate candidates
+
 
           Source commit: $GITHUB_SHA
           Workflow run: $GITHUB_RUN_ID
           No Actions artifact is uploaded or retained.
           EOF
-          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release upload "$TAG" "$ASSET" "$CHECKSUM" --clobber --repo "$GITHUB_REPOSITORY"
-            gh release edit "$TAG" --target "$GITHUB_SHA" --notes-file release_notes.txt --title "PUBGM SDK Dumper ARM64 (rolling QA)" --prerelease --repo "$GITHUB_REPOSITORY"
-          else
-            gh release create "$TAG" "$ASSET" "$CHECKSUM" --target "$GITHUB_SHA" --title "PUBGM SDK Dumper ARM64 (rolling QA)" --notes-file release_notes.txt --prerelease --repo "$GITHUB_REPOSITORY"
-          fi
+          gh release create "$TAG" "$ASSET" "$CHECKSUM" \
+            --target "$GITHUB_SHA" \
+            --title "PUBGM SDK Dumper ARM64 ${GITHUB_RUN_NUMBER}" \
+            --notes-file release_notes.txt \
+            --repo "$GITHUB_REPOSITORY"
           gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json url,tagName,targetCommitish,assets
 
       - name: Verify no Actions artifacts are retained
