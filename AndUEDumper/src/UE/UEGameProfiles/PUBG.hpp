@@ -8,6 +8,12 @@ class PUBGProfile : public IGameProfile
 public:
     PUBGProfile() = default;
 
+    // Current private-server / 1.39 layout verified from the running ARM64 build.
+    static constexpr uintptr_t kGNamesRva        = 0x176E6650;
+    static constexpr uintptr_t kGUObjectArrayRva = 0x17D46E08;
+    static constexpr uintptr_t kObjObjectsRva    = 0x17D46E18;
+    static constexpr uintptr_t kPhysxRva         = 0x181A36B0;
+
     bool ArchSupprted() const override
     {
         auto e_machine = GetUnrealELF().header().e_machine;
@@ -16,7 +22,7 @@ public:
 
     std::string GetAppName() const override
     {
-        return "和平精英";
+        return "PUBGM private-server current";
     }
 
     std::vector<std::string> GetAppIDs() const override
@@ -31,6 +37,7 @@ public:
 
     bool IsUsingFNamePool() const override
     {
+        // Current verified name source is the legacy chunked GNames table.
         return false;
     }
 
@@ -41,103 +48,61 @@ public:
 
     uintptr_t GetGUObjectArrayPtr() const override
     {
-        std::string ida_pattern = "? ? ? B9 ? ? ? B9 1F 01 09 6B ? ? ? 54 ? ? ? ? ? ? ? 91 E1 03 14 AA ? ? ? 97 ? ? ? 91 ? ? ? 91";
-        const int step = 0x10;
+        const auto base = GetUEVars()->GetBaseAddress();
+        const auto ptr = base + kGUObjectArrayRva;
+        printf("[PUBGM-QA] GUObjectArray: base+0x%lX = 0x%lX\n",
+               (unsigned long)kGUObjectArrayRva, (unsigned long)ptr);
+        return ptr;
+    }
 
-        PATTERN_MAP_TYPE map_type = isEmulator() ? PATTERN_MAP_TYPE::ANY_R : PATTERN_MAP_TYPE::ANY_X;
-        //printf("%lx\n", Arm64::Decode_ADRP_ADD(findIdaPattern(map_type, ida_pattern, step)));
-        return Arm64::Decode_ADRP_ADD(findIdaPattern(map_type, ida_pattern, step)) + 0xb8;
-    }
-    void print_func() const
-    {
-        auto base = GetUEVars()->GetBaseAddress();
-        //printf("0x%lx\n", base);
-        std::string CalShootTargetLocationBP = "60 1C A3 4E 81 1C A4 4E A2 1C A5 4E C0 03 5F D6 ? ? ? F9";
-        std::string DecArray = "0F 11 00 B9 1B 21 00 B9 0E 31 00 B9 0F 41 00 B9 1B 51 00 B9 18 61 00 B9 19 71 00 B9 1A 81 00 B9 17 91 00 B9 0B A1 00 B9 1F B1 00 B9 1F C1 00 B9 0D D1 00 B9 0A E1 00 B9 08 C1 03 91";
-        std::string GetAccessoriesDeviationFactor = "? ? ? BD 81 09 21 1E 00 28 21 1E 40 09 20 1E";
-        std::string GetAccessoriesAllRecoilFactorModifier = "40 08 20 1E ? ? ? 71";
-        std::string AnimationKick = "0B 08 2B 1E 00 01 3F D6";
-        PATTERN_MAP_TYPE map_type = isEmulator() ? PATTERN_MAP_TYPE::ANY_R : PATTERN_MAP_TYPE::ANY_X;
-        printf("CalShootTargetLocationBPOffset:0x%lX\n", findIdaPattern(map_type, CalShootTargetLocationBP, 0) - base);
-        printf("DecArrayOffset:0x%lX\n", findIdaPattern(map_type, DecArray, 0) - base);
-        printf("GetAccessoriesDeviationFactorOffset:0x%lX\n", findIdaPattern(map_type, GetAccessoriesDeviationFactor, 0) - base);
-        printf("GetAccessoriesAllRecoilFactorModifierOffset:0x%lX\n", findIdaPattern(map_type, GetAccessoriesAllRecoilFactorModifier, 0) - base);
-        printf("AnimationKickOffset:0x%lX\n", findIdaPattern(map_type, AnimationKick, 0) - base);
-    }
     uintptr_t GetNamesPtr() const override
     {
-        print_func();
-        // auto base = GetUEVars()->GetBaseAddress();
-        // return base + 0x14e33c18;
-        std::string ida_pattern = "? ? ? ? ? ? ? D0 ? ? ? F9 ? ? ? 91 ? ? ? 91 ? ? ? 94";
-        const int step = 0x0;
-
-        PATTERN_MAP_TYPE map_type = isEmulator() ? PATTERN_MAP_TYPE::ANY_R : PATTERN_MAP_TYPE::ANY_X;
-        //printf("%lx\n", findIdaPattern(map_type, ida_pattern, step));
-        return Arm64::Decode_ADRP_LDR(findIdaPattern(map_type, ida_pattern, step),0x8);
+        const auto base = GetUEVars()->GetBaseAddress();
+        const auto ptr = base + kGNamesRva;
+        printf("[PUBGM-QA] GNames: base+0x%lX = 0x%lX\n",
+               (unsigned long)kGNamesRva, (unsigned long)ptr);
+        printf("[PUBGM-QA] Expected ObjObjects: base+0x%lX\n",
+               (unsigned long)kObjObjectsRva);
+        printf("[PUBGM-QA] UObject.NamePrivate=0x48 FNameEntry.Name=0x0C\n");
+        return ptr;
     }
 
     uintptr_t GetFrameCount() const override
     {
-        PATTERN_MAP_TYPE map_type = isEmulator() ? PATTERN_MAP_TYPE::ANY_R : PATTERN_MAP_TYPE::ANY_X;
-
-        std::string ida_pattern = "? ? ? F0 ? ? ? F9 ? ? ? F9 C0 03 5F D6 ? ? ? A9 ? ? ? A9 ? ? ? A9 ? ? ? 91 ? ? ? D1 F3 03 01 2A";
-        const int step = 0;
-        auto FrameOff = Arm64::Decode_ADRP_LDR(findIdaPattern(map_type, ida_pattern, step));
-        if (FrameOff != 0)
-            return vm_rpm_ptr<uintptr_t>((void*)FrameOff);
+        // Old signature is version-specific. Do not report a false match.
         return 0;
     }
 
     uintptr_t GetMatrix() const override
     {
-        std::vector<std::pair<std::string, int>> idaPatterns = {
-            {"? ? ? D0 ? ? ? F9 ? ? ? 32 6B 7D 40 93 6C 25 0A 9B ? ? ? F9 BF 01 08 EB ? ? ? 54 6B 25 0A 9B ? ? ? B9 ? ? ? 31 ? ? ? 54 ? ? ? 14 ? ? ? B4 ? ? ? 32 68 25 08 9B ? ? ? F9 ? ? ? 14", 0},
-        };
-
-        PATTERN_MAP_TYPE map_type = isEmulator() ? PATTERN_MAP_TYPE::ANY_R : PATTERN_MAP_TYPE::ANY_X;
-
-        for (const auto& it : idaPatterns)
-        {
-            std::string ida_pattern = it.first;
-            const int step = it.second;
-
-            uintptr_t adrl = Arm64::Decode_ADRP_LDR(findIdaPattern(map_type, ida_pattern, step));
-            if (adrl != 0) return adrl;
-        }
+        // Current project derives the view from CameraManager; the old profile
+        // signature is stale. Matrix is optional for SDK class dumping.
         return 0;
     }
 
     uintptr_t GetPhysx() const override
     {
-        std::vector<std::pair<std::string, int>> idaPatterns = {
-            {"? ? ? B0 00 03 3F D6", 0x0},
-        };
-
-        PATTERN_MAP_TYPE map_type = isEmulator() ? PATTERN_MAP_TYPE::ANY_R : PATTERN_MAP_TYPE::ANY_X;
-
-        for (const auto& it : idaPatterns)
-        {
-            std::string ida_pattern = it.first;
-            const int step = it.second;
-
-            uintptr_t adrl = Arm64::Decode_ADRP_LDR(findIdaPattern(map_type, ida_pattern, step),0x20);
-            //printf("%lx\n", vm_rpm_ptr<uintptr_t>((void*)adrl));
-            if (adrl != 0) return adrl;
-        }
-        return 0;
+        // Verified global slot from current runtime audit.
+        return GetUEVars()->GetBaseAddress() + kPhysxRva;
     }
+
     UE_Offsets *GetOffsets() const override
     {
-        static UE_Offsets offsets = UE_DefaultOffsets::UE4_18_19(isUsingCasePreservingName());
+        // Keep the project's legacy-name/TUObjectArray baseline, but override
+        // only fields already verified on this current build. Do not guess
+        // ClassPrivate/OuterPrivate/UStruct offsets here; the next device run
+        // will tell us exactly where the dump advances or stops.
+        static UE_Offsets offsets =
+            UE_DefaultOffsets::UE4_18_19(isUsingCasePreservingName());
 
         static bool once = false;
         if (!once)
         {
             once = true;
             offsets.FNameEntry.Index = sizeof(void *);
-            offsets.FNameEntry.Name = sizeof(void *) + sizeof(int32_t);
+            offsets.FNameEntry.Name = 0x0C;
             offsets.TUObjectArray.NumElements = 0x38;
+            offsets.UObject.NamePrivate = 0x48;
         }
 
         return &offsets;
