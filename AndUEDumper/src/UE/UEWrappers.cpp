@@ -57,22 +57,44 @@ uint8_t *UE_UObjectArray::GetObjectPtr(int32_t id) const
     if (id < 0 || id >= GetNumElements() || !Objects)
         return nullptr;
 
+    auto normalize = [](uintptr_t p) -> uintptr_t
+    {
+        if ((p >> 56) == 0xB4)
+            p &= 0x00FFFFFFFFFFFFFFULL;
+        return p;
+    };
+
+    const uintptr_t objectsBase = normalize((uintptr_t)Objects);
+    if (!objectsBase)
+        return nullptr;
+
     if (UEWrappers::GetOffsets()->TUObjectArray.NumElementsPerChunk <= 0)
     {
-        return vm_rpm_ptr<uint8_t *>((void *)((uintptr_t)Objects + (id * UEWrappers::GetOffsets()->FUObjectItem.Size) + UEWrappers::GetOffsets()->FUObjectItem.Object));
+        uintptr_t obj = vm_rpm_ptr<uintptr_t>(
+            (void *)(objectsBase +
+                     (id * UEWrappers::GetOffsets()->FUObjectItem.Size) +
+                     UEWrappers::GetOffsets()->FUObjectItem.Object));
+        obj = normalize(obj);
+        return reinterpret_cast<uint8_t *>(obj);
     }
 
-    const int32_t NumElementsPerChunk = UEWrappers::GetOffsets()->TUObjectArray.NumElementsPerChunk;
+    const int32_t NumElementsPerChunk =
+        UEWrappers::GetOffsets()->TUObjectArray.NumElementsPerChunk;
     const int32_t chunkIndex = id / NumElementsPerChunk;
     const int32_t withinChunkIndex = id % NumElementsPerChunk;
 
-    // if (chunkIndex >= NumChunks) return nullptr;
-
-    uint8_t *chunk = vm_rpm_ptr<uint8_t *>(Objects + chunkIndex);
+    uintptr_t chunk = vm_rpm_ptr<uintptr_t>(
+        (void *)(objectsBase + (chunkIndex * sizeof(uintptr_t))));
+    chunk = normalize(chunk);
     if (!chunk)
         return nullptr;
 
-    return vm_rpm_ptr<uint8_t *>(chunk + (withinChunkIndex * UEWrappers::GetOffsets()->FUObjectItem.Size) + UEWrappers::GetOffsets()->FUObjectItem.Object);
+    uintptr_t obj = vm_rpm_ptr<uintptr_t>(
+        (void *)(chunk +
+                 (withinChunkIndex * UEWrappers::GetOffsets()->FUObjectItem.Size) +
+                 UEWrappers::GetOffsets()->FUObjectItem.Object));
+    obj = normalize(obj);
+    return reinterpret_cast<uint8_t *>(obj);
 }
 
 void UE_UObjectArray::ForEachObject(const std::function<bool(UE_UObject)> &callback) const
